@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/png"
 	"io"
-	"log"
 	"net/http"
 	url2 "net/url"
 	"os"
@@ -178,13 +177,17 @@ func PutUserAvatar(ctx echo.Context) error {
 	imgBase64 := strings.Replace(data, "data:image/png;base64,", "", 1)
 	decodeData, err := base64.StdEncoding.DecodeString(string(imgBase64))
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: err.Error()})
 	}
 
 	// 将字节数组转为图片
 	img, _, err := image.Decode(strings.NewReader(string(decodeData)))
 	if err != nil {
-		log.Fatal(err)
+		// NOTE: never fatal here — a bad upload must not kill the whole UserService.
+		// Historically this was log.Fatal(err), which crashed the process (and thus
+		// authentication) on any malformed avatar payload.
+		logger.Error("failed to decode avatar image", zap.Error(err))
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: "invalid image data"})
 	}
 
 	ext := ".png"
@@ -283,6 +286,14 @@ func PutUserInfo(ctx echo.Context) error {
 	}
 	if len(json.Nickname) == 0 {
 		json.Nickname = user.Nickname
+	}
+	// Always target the authenticated user. Callers may omit `id` in the body,
+	// in which case the bound struct pegged Id=0 and UpdateUser matched no row,
+	// yet still returned 200 (silent no-op). Also preserve username when the
+	// caller does not supply one, so Updates() cannot blank it.
+	json.Id = user.Id
+	if len(json.Username) == 0 {
+		json.Username = user.Username
 	}
 	service.MyService.User().UpdateUser(json)
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: json})
@@ -481,6 +492,13 @@ func PostUserCustomConf(ctx echo.Context) error {
 			model.Result{Success: common_err.USER_NOT_EXIST, Message: common_err.GetMsg(common_err.USER_NOT_EXIST)})
 	}
 	data, _ := io.ReadAll(ctx.Request().Body)
+	// Reject empty / non-JSON bodies up front: they were previously persisted and
+	// then returned as json.RawMessage, which failed to marshal (500) and left a
+	// corrupt config file behind.
+	if !gjson.ValidBytes(data) {
+		return ctx.JSON(common_err.CLIENT_ERROR,
+			model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
 	filePath := config.AppInfo.UserDataPath + "/" + strconv.Itoa(user.Id)
 
 	if err := file.IsNotExistMkDir(filePath); err != nil {
@@ -500,7 +518,12 @@ func PostUserCustomConf(ctx echo.Context) error {
 		if err != nil {
 			logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", string(data)))
 		}
-		if response.StatusCode() != http.StatusOK {
+		// Guard against a nil response: when the MessageBus is unavailable
+		// PublishEventWithResponse returns (nil, err). Dereferencing it here
+		// previously panicked, turning this endpoint into a 502 (which in turn
+		// broke the UI bootstrap that awaits it). Message-bus delivery is
+		// best-effort — the config has already been persisted above.
+		if response != nil && response.StatusCode() != http.StatusOK {
 			logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
 		}
 
