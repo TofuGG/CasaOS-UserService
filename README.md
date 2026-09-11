@@ -4,6 +4,17 @@
 
 User Service provides user management functionalities to CasaOS.
 
+## Security Hardening
+
+| # | Fix |
+|---|-----|
+| 11 | **JWT skipper removed** — no more loopback (`127.0.0.1` / `::1`) auth bypass on any route |
+| 11 | **IP extractor hardened** — `echo.ExtractIPDirect()`; client-supplied `X-Forwarded-For` / `X-Real-IP` headers are never trusted |
+| 11 | **Query-token fallback removed** — JWT is read from the `Authorization` header only, except the statically-rendered `<img>` asset routes (`/v1/users/avatar`, `/v1/users/current/image/:key`) which still accept a short-lived `?token=` for browser compatibility |
+| 11 | **CORS tightened** — origins restricted to localhost/`127.0.0.1`, `AllowCredentials: false` |
+
+> **Note:** build requires codegen first (`go generate ./...`); the generated `codegen/` packages are intentionally git-ignored.
+
 
 
 ## publish api to npm

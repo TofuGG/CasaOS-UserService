@@ -47,22 +47,35 @@ func InitV2Router() http.Handler {
 
 	e := echo.New()
 
+	// SECURITY: Never trust client-supplied X-Forwarded-For / X-Real-IP headers
+	// for remote-address determination (the JWT skipper previously relied on
+	// RealIP(), which echo derives from those headers).
+	e.IPExtractor = echo.ExtractIPDirect()
+
 	e.Use((echo_middleware.CORSWithConfig(echo_middleware.CORSConfig{
-		AllowOrigins:     []string{"*"},
+		AllowOrigins: []string{
+			"http://127.0.0.1:*",
+			"http://localhost:*",
+			"https://127.0.0.1:*",
+			"https://localhost:*",
+		},
 		AllowMethods:     []string{echo.POST, echo.GET, echo.OPTIONS, echo.PUT, echo.DELETE},
 		AllowHeaders:     []string{echo.HeaderAuthorization, echo.HeaderContentLength, echo.HeaderXCSRFToken, echo.HeaderContentType, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders, echo.HeaderAccessControlAllowMethods, echo.HeaderConnection, echo.HeaderOrigin, echo.HeaderXRequestedWith},
 		ExposeHeaders:    []string{echo.HeaderContentLength, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders},
 		MaxAge:           172800,
-		AllowCredentials: true,
+		AllowCredentials: false,
 	})))
 
 	e.Use(echo_middleware.Gzip())
 
 	e.Use(echo_middleware.Logger())
 
+	// SECURITY: always require a valid JWT — no localhost skipper.
+	// Header-only token extraction; no query-string fallback needed on v2
+	// (no browser <img> or WebSocket routes).
 	e.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
 		Skipper: func(c echo.Context) bool {
-			return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
+			return false // SECURITY: always require auth
 		},
 		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
 			valid, claims, err := jwt.Validate(
