@@ -1,6 +1,9 @@
 package service
 
 import (
+	"log"
+	"time"
+
 	"github.com/IceWhaleTech/CasaOS-Common/external"
 	"github.com/IceWhaleTech/CasaOS-UserService/codegen/message_bus"
 	"github.com/IceWhaleTech/CasaOS-UserService/pkg/config"
@@ -18,7 +21,19 @@ type Repository interface {
 
 func NewService(db *gorm.DB, RuntimePath string) Repository {
 
+	// The gateway rewrites its management.url at boot, so on a fresh start the
+	// file can briefly hold a stale address (a dead port from the previous run)
+	// and the first ping returns a connection error. Retry within a bounded
+	// window instead of panicking on the first attempt.
+	const retryAttempts = 30
+	const retryDelay = 500 * time.Millisecond
+
 	gatewayManagement, err := external.NewManagementService(RuntimePath)
+	for attempt := 1; err != nil && attempt <= retryAttempts; attempt++ {
+		log.Printf("[service] gateway management service not ready (attempt %d/%d): %s", attempt, retryAttempts, err)
+		time.Sleep(retryDelay)
+		gatewayManagement, err = external.NewManagementService(RuntimePath)
+	}
 	if err != nil {
 		panic(err)
 	}
